@@ -15,7 +15,7 @@ I'm a versatile junior developer passionate about turning data into actionable i
 - 📊 I love data storytelling and making complex information easy to understand
 - 🌱 Currently deepening my skills in machine learning and modern web frameworks
 - 💼 Available for **freelance** projects in data analysis, dashboards, and web development
-- 📍 Based in México
+- 📍 Based in Buenos Aires, Argentina
 
 ---
 
