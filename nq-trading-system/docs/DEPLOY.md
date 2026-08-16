@@ -225,12 +225,23 @@ El HTML se genera entero en build time: los gráficos son SVG escritos por el
 script, no una librería de charts. La página no hace ni un pedido de red al
 abrirse.
 
+### ⚠️ Requisito previo: el workflow tiene que estar en la rama por defecto
+
+GitHub **solo ejecuta los triggers `schedule` y `workflow_dispatch` de
+workflows que estén en la rama por defecto** (acá, `main`). Es una regla de
+GitHub, no una configuración: mientras `dashboard.yml` viva únicamente en la
+rama de desarrollo, el cron nunca dispara y el botón "Run workflow" ni siquiera
+aparece en la pestaña Actions.
+
+Así que antes de nada, el archivo tiene que llegar a `main` — mergeando la rama
+o abriendo un PR y aprobándolo.
+
 ### Activarlo
 
 1. **Settings → Pages → Source: "GitHub Actions"** (una sola vez).
 2. Listo. El workflow `.github/workflows/dashboard.yml` ya está en el repo.
 
-Queda en `https://vvictoriagarcia.github.io/vvictoriagarcia/`.
+Queda en `https://vvvictoriagarcia.github.io/vvictoriagarcia/`.
 
 Para probarlo sin esperar al cron: **Actions → Dashboard → Run workflow**.
 
@@ -294,7 +305,7 @@ perfil: público y visible en tu portfolio. Dos consideraciones:
 
 Si preferís tenerlo aparte, creá un repo dedicado (`nq-dashboard`), moveleé la
 carpeta y el workflow, y queda en
-`vvictoriagarcia.github.io/nq-dashboard/`.
+`vvvictoriagarcia.github.io/nq-dashboard/`.
 
 ---
 
