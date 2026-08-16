@@ -111,6 +111,7 @@ nq-trading-system/
 │   └── README.md            # guía de instalación de la Parte 2
 │
 ├── tools/
+│   ├── optimize.py          # grid search con validación fuera de muestra
 │   ├── check_parity.py      # ¿Python y JS dan lo mismo?
 │   ├── build_n8n_workflow.py# genera el JSON del workflow
 │   └── test_live_node.py    # testea el Code node de n8n
@@ -383,6 +384,54 @@ costos dominan, o hay muchas velas ambiguas.
 
 ---
 
+## Validar una estrategia antes de confiar en ella
+
+Un backtest positivo no alcanza. `tools/optimize.py` prueba una grilla de
+parámetros, pero con tres diferencias respecto de un grid search común — que
+son justamente las que evitan que te engañes solo:
+
+```bash
+python tools/optimize.py
+python tools/optimize.py --tp 20,30,40,60 --sl 10,15,20,30 --split 0.7
+```
+
+1. **Parte la serie.** Optimiza sobre el primer 70 % y después mide esos
+   mismos parámetros sobre el 30 % final, que nunca vio.
+2. **Busca mesetas, no picos.** El mejor combo de una grilla casi siempre es
+   ruido: dio bien de casualidad y sus vecinos dan mal. Un parámetro con edge
+   real forma una meseta. La columna `meseta` promedia cada combo con sus
+   vecinos, y desenmascara los picos aislados.
+3. **Descarta muestras chicas.** Un combo con 6 trades y profit factor 8,0 no
+   dice nada.
+
+Corrido sobre el placeholder (96 combinaciones, NQ=F 5m):
+
+```
+      EMA     TP/SL   R:R │  IS PF  IS tr │  OOS PF  OOS tr │  meseta   caída
+    9/21    60/30    2.00 │   1.45     69 │   1.01✓      32 │    0.70   +0.44
+    9/21    60/20    3.00 │   1.43     69 │   0.46✗      32 │    0.46   +0.97
+    9/21    60/15    4.00 │   1.42     69 │   0.26✗      32 │    0.29   +1.16
+   13/21    60/20    3.00 │   1.30     55 │   0.30✗      28 │    0.45   +1.01
+
+  Combos rentables in-sample .......... 26/96 (27%)
+  Combos rentables out-of-sample ...... 6/96 (6%)
+  Del top 10 in-sample, aguantan OOS .. 1/10
+  Correlación IS ↔ OOS del PF ......... -0.291
+
+    ✗ SOBREAJUSTE. Lo que mejor anduvo in-sample se desarma fuera de muestra.
+```
+
+La correlación entre in-sample y out-of-sample es **negativa**: con esta
+estrategia, elegir parámetros mirando el backtest es literalmente peor que
+elegirlos al azar. El único combo que sobrevive (PF 1,01) tiene `meseta` 0,70
+— es un pico aislado rodeado de vecinos perdedores, o sea ruido.
+
+El mapa de calor lo muestra de un vistazo: un mar de rojo con una sola celda
+azul. Eso es lo que hay que aprender a reconocer antes de arriesgar plata.
+
+Cuando metas tu estrategia, esto es lo que querés ver en cambio: una **región**
+azul contigua, y una correlación IS↔OOS positiva.
+
 ## Tests
 
 ```bash
@@ -445,10 +494,17 @@ tiende a perder — como muestra la corrida de arriba.
 Existe para que puedas verificar que el pipeline funciona de punta a punta
 antes de meter tu lógica. No la operes.
 
+Y no es solo que pierda: `tools/optimize.py` muestra que **no hay ningún juego
+de parámetros que la salve**. La correlación entre el resultado in-sample y el
+out-of-sample es −0,29, y de los 10 mejores combos in-sample solo 1 sobrevive
+fuera de muestra. Cuando pasa eso, el problema no son los parámetros: es que
+la estrategia no tiene edge.
+
 Un backtest positivo tampoco alcanza: sobre 55 días y ~100 trades no hay
 significancia estadística. Antes de arriesgar plata, buscá 300+ trades sobre
-varios regímenes de mercado, testeá fuera de muestra, y verificá que el
-resultado no dependa de un puñado de trades.
+varios regímenes de mercado, corré `tools/optimize.py` para confirmar que el
+resultado aguanta fuera de muestra y forma meseta, y verificá que no dependa
+de un puñado de trades.
 
 Este sistema es una herramienta de análisis. No ejecuta órdenes ni se conecta
 a ningún broker, y no constituye asesoramiento financiero.
