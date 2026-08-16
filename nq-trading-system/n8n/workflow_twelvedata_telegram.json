@@ -1,0 +1,247 @@
+{
+  "name": "Alertas QQQ · 5min · EMA cross + RSI",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 13-20 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "trigger-cron",
+      "name": "Cron 5 min (horario mercado)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        300
+      ],
+      "notes": "Cron en UTC. 13-20h UTC cubre la sesión regular de NY en horario de verano y de invierno; el Code node descarta las corridas fuera de 09:30-16:00 America/New_York."
+    },
+    {
+      "parameters": {
+        "url": "https://api.twelvedata.com/time_series",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "symbol",
+              "value": "QQQ"
+            },
+            {
+              "name": "interval",
+              "value": "5min"
+            },
+            {
+              "name": "outputsize",
+              "value": "120"
+            },
+            {
+              "name": "order",
+              "value": "desc"
+            },
+            {
+              "name": "timezone",
+              "value": "America/New_York"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-marketdata",
+      "name": "Twelve Data · time_series",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        40,
+        300
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "REEMPLAZAR",
+          "name": "PLACEHOLDER · Twelve Data API Key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "notes": "La API key va en una credencial 'Query Auth' (nombre: apikey), NUNCA hardcodeada acá. neverError=true porque Twelve Data devuelve HTTP 200 con {status:'error'} en el body."
+    },
+    {
+      "parameters": {
+        "jsCode": "/* ═══════════════════════════════════════════════════════════════════\n *  GENERADO POR tools/build_n8n_workflow.py — NO EDITAR ACÁ\n *\n *  Editá n8n/strategy.js (lógica) o n8n/live_wrapper.js (config y\n *  glue de n8n) y volvé a correr el generador. Si editás este nodo\n *  directamente en la UI de n8n, el próximo build te lo pisa y además\n *  perdés la garantía de paridad con el backtester.\n *\n *  Verificá la paridad con:  python tools/check_parity.py\n * ═══════════════════════════════════════════════════════════════════ */\n\n/* ===========================================================================\n *  strategy.js — PORT EXACTO de src/indicators.py + src/strategy.py\n * ===========================================================================\n *\n *  Este archivo es el contenido del Code node \"Indicadores + Estrategia\" del\n *  workflow de n8n. Se mantiene también como archivo suelto para poder\n *  testearlo con Node y verificar la paridad contra Python.\n *\n *  ┌──────────────────────────────────────────────────────────────────────┐\n *  │  SI CAMBIÁS LA ESTRATEGIA EN PYTHON, CAMBIALA TAMBIÉN ACÁ.           │\n *  │  Después corré:  python tools/check_parity.py                        │\n *  │  Compara ambas implementaciones vela por vela sobre datos reales de  │\n *  │  NQ=F y falla si divergen. Un backtest que no coincide con las       │\n *  │  alertas en vivo es peor que no tener backtest.                      │\n *  │                                                                       │\n *  │  ¿No querés mantener dos implementaciones? Usá src/signal_service.py │\n *  │  (Opción B en n8n/README.md): n8n llama por HTTP a la función Python │\n *  │  y hay una sola fuente de verdad.                                    │\n *  └──────────────────────────────────────────────────────────────────────┘\n *\n *  PARIDAD NUMÉRICA — los detalles que importan\n *  --------------------------------------------\n *  pandas tiene semánticas específicas que hay que replicar al pie de la\n *  letra o los números divergen en el tercer decimal y las señales cambian:\n *\n *   1. EMA (ewm adjust=False): la recursión arranca en el PRIMER valor de la\n *      serie (ema[0] = x[0]), NO en la SMA de las primeras n barras. Los\n *      primeros n-1 resultados se enmascaran como null.\n *   2. RMA (ewm alpha=1/n): igual, pero arranca en el primer valor NO NULO.\n *      Como delta[0] es null (viene de un diff), la recursión del RSI\n *      empieza en el índice 1 y el primer RSI válido cae en el índice n.\n *   3. RSI usa RMA (alpha = 1/n), no EMA (alpha = 2/(n+1)). Confundirlas da\n *      un RSI sistemáticamente distinto al de TradingView.\n */\n\n// ---------------------------------------------------------------------------\n// Indicadores\n// ---------------------------------------------------------------------------\n\n/**\n * EMA — equivale a pandas: series.ewm(span=period, adjust=False,\n * min_periods=period).mean()\n * @param {number[]} values\n * @param {number} period\n * @returns {(number|null)[]}\n */\nfunction ema(values, period) {\n  if (period < 1) throw new Error(`El período de EMA debe ser >= 1, recibí ${period}`);\n  const alpha = 2 / (period + 1);\n  const out = new Array(values.length).fill(null);\n  let prev = null;\n\n  for (let i = 0; i < values.length; i++) {\n    const v = values[i];\n    if (v === null || v === undefined || Number.isNaN(v)) continue;\n    // Semilla en el primer valor válido; después, recursión.\n    prev = prev === null ? v : alpha * v + (1 - alpha) * prev;\n    // min_periods: recién a partir de la barra period-1 hay valor.\n    if (i >= period - 1) out[i] = prev;\n  }\n  return out;\n}\n\n/**\n * SMA — equivale a pandas: series.rolling(period, min_periods=period).mean()\n */\nfunction sma(values, period) {\n  if (period < 1) throw new Error(`El período de SMA debe ser >= 1, recibí ${period}`);\n  const out = new Array(values.length).fill(null);\n  let sum = 0;\n  for (let i = 0; i < values.length; i++) {\n    sum += values[i];\n    if (i >= period) sum -= values[i - period];\n    if (i >= period - 1) out[i] = sum / period;\n  }\n  return out;\n}\n\n/**\n * RMA / suavizado de Wilder — pandas: ewm(alpha=1/period, adjust=False,\n * min_periods=period).mean()\n *\n * Los nulls se SALTEAN (no rompen la recursión) y no cuentan para\n * min_periods, exactamente como hace pandas.\n */\nfunction rma(values, period) {\n  const alpha = 1 / period;\n  const out = new Array(values.length).fill(null);\n  let prev = null;\n  let seen = 0;\n\n  for (let i = 0; i < values.length; i++) {\n    const v = values[i];\n    if (v === null || v === undefined || Number.isNaN(v)) continue;\n    seen += 1;\n    prev = prev === null ? v : alpha * v + (1 - alpha) * prev;\n    if (seen >= period) out[i] = prev;\n  }\n  return out;\n}\n\n/**\n * RSI de Wilder. Port exacto de src/indicators.py::rsi\n */\nfunction rsi(values, period = 14) {\n  if (period < 2) throw new Error(`El período de RSI debe ser >= 2, recibí ${period}`);\n\n  // delta = close.diff()  -> delta[0] es null\n  const gain = new Array(values.length).fill(null);\n  const loss = new Array(values.length).fill(null);\n  for (let i = 1; i < values.length; i++) {\n    const d = values[i] - values[i - 1];\n    gain[i] = d > 0 ? d : 0;\n    loss[i] = d < 0 ? -d : 0;\n  }\n\n  const avgGain = rma(gain, period);\n  const avgLoss = rma(loss, period);\n\n  const out = new Array(values.length).fill(null);\n  for (let i = 0; i < values.length; i++) {\n    const g = avgGain[i];\n    const l = avgLoss[i];\n    if (g === null || l === null) continue;\n\n    if (l === 0 && g === 0) {\n      out[i] = 50;          // mercado plano\n    } else if (l === 0) {\n      out[i] = 100;         // racha alcista pura\n    } else {\n      out[i] = 100 - 100 / (1 + g / l);\n    }\n  }\n  return out;\n}\n\n/**\n * ATR de Wilder. Port exacto de src/indicators.py::atr\n */\nfunction atr(highs, lows, closes, period = 14) {\n  const tr = new Array(closes.length).fill(null);\n  for (let i = 0; i < closes.length; i++) {\n    if (i === 0) {\n      tr[i] = highs[i] - lows[i];\n      continue;\n    }\n    const pc = closes[i - 1];\n    tr[i] = Math.max(highs[i] - lows[i], Math.abs(highs[i] - pc), Math.abs(lows[i] - pc));\n  }\n  return rma(tr, period);\n}\n\n/**\n * Calcula todos los indicadores sobre un array de velas.\n * Devuelve el mismo array con los indicadores agregados a cada vela.\n *\n * @param {Array<{timestamp:string, open:number, high:number, low:number,\n *                close:number, volume:number}>} candles  (ascendente: la\n *                última posición es la vela más reciente)\n * @param {object} cfg  { emaFast, emaSlow, rsiPeriod, volumeMaPeriod, atrPeriod }\n */\nfunction addIndicators(candles, cfg) {\n  const closes = candles.map((c) => c.close);\n  const highs = candles.map((c) => c.high);\n  const lows = candles.map((c) => c.low);\n  const volumes = candles.map((c) => c.volume);\n\n  const emaFast = ema(closes, cfg.emaFast);\n  const emaSlow = ema(closes, cfg.emaSlow);\n  const rsiArr = rsi(closes, cfg.rsiPeriod);\n  const atrArr = atr(highs, lows, closes, cfg.atrPeriod);\n  const volMa = sma(volumes, cfg.volumeMaPeriod);\n\n  return candles.map((c, i) => ({\n    ...c,\n    ema_fast: emaFast[i],\n    ema_slow: emaSlow[i],\n    ema_spread: emaFast[i] !== null && emaSlow[i] !== null ? emaFast[i] - emaSlow[i] : null,\n    rsi: rsiArr[i],\n    atr: atrArr[i],\n    volume_ma: volMa[i],\n    volume_ratio: volMa[i] ? c.volume / volMa[i] : null,\n  }));\n}\n\n// ---------------------------------------------------------------------------\n// Estrategia — PORT DE src/strategy.py::EmaCrossRsi\n// ---------------------------------------------------------------------------\n\nconst NO_SIGNAL = { type: 'NONE', reason: '', context: {} };\n\n/**\n * Evalúa la estrategia sobre la ÚLTIMA vela cerrada.\n *\n * @param {object} bar   vela actual con indicadores\n * @param {object} prev  vela anterior con indicadores\n * @param {object} params  strategy.params de config.yaml\n * @returns {{type:'LONG'|'SHORT'|'NONE', reason:string, context:object}}\n */\nfunction evaluate(bar, prev, params) {\n  // --- Guardas (mismo orden que en Python) ---\n  if (!prev) return NO_SIGNAL;\n  if (bar.ema_fast === null || bar.ema_slow === null || bar.rsi === null) return NO_SIGNAL;\n  if (prev.ema_fast === null || prev.ema_slow === null) return NO_SIGNAL;\n\n  const rsiValue = bar.rsi;\n\n  // --- Detección del cruce ---\n  const spreadNow = bar.ema_fast - bar.ema_slow;\n  const spreadPrev = prev.ema_fast - prev.ema_slow;\n\n  const crossUp = spreadPrev <= 0 && spreadNow > 0;\n  const crossDown = spreadPrev >= 0 && spreadNow < 0;\n\n  if (!crossUp && !crossDown) return NO_SIGNAL;\n\n  // --- Filtro de volumen (opcional) ---\n  if (params.use_volume_filter) {\n    const volMa = bar.volume_ma;\n    const factor = params.volume_factor ?? 1.0;\n    if (volMa === null || bar.volume <= volMa * factor) return NO_SIGNAL;\n  }\n\n  const round2 = (x) => Math.round(x * 100) / 100;\n  const indCtx = {\n    ema_fast: round2(bar.ema_fast),\n    ema_slow: round2(bar.ema_slow),\n    rsi: round2(rsiValue),\n    volume: bar.volume,\n    close: round2(bar.close),\n  };\n\n  // --- LONG ---\n  if (crossUp && (params.allow_long ?? true)) {\n    const lo = params.rsi_long_min ?? 50.0;\n    const hi = params.rsi_long_max ?? 70.0;\n    if (rsiValue > lo && rsiValue < hi) {\n      return {\n        type: 'LONG',\n        reason: `Cruce alcista EMA + RSI ${rsiValue.toFixed(1)} en (${lo}, ${hi})`,\n        context: indCtx,\n      };\n    }\n    return NO_SIGNAL;\n  }\n\n  // --- SHORT ---\n  if (crossDown && (params.allow_short ?? true)) {\n    const lo = params.rsi_short_min ?? 30.0;\n    const hi = params.rsi_short_max ?? 50.0;\n    if (rsiValue > lo && rsiValue < hi) {\n      return {\n        type: 'SHORT',\n        reason: `Cruce bajista EMA + RSI ${rsiValue.toFixed(1)} en (${lo}, ${hi})`,\n        context: indCtx,\n      };\n    }\n    return NO_SIGNAL;\n  }\n\n  return NO_SIGNAL;\n}\n\n\n/* ===========================================================================\n *  live_wrapper.js — glue específico de n8n\n * ===========================================================================\n *\n *  Se concatena DESPUÉS de n8n/strategy.js para formar el Code node\n *  \"Indicadores + Estrategia\". No dupliques lógica de estrategia acá: acá\n *  va solo lo que tiene que ver con vivir dentro de n8n (parsear la\n *  respuesta de la API, ventana rolling, deduplicación, horario de mercado).\n *\n *  Regenerá el workflow con:  python tools/build_n8n_workflow.py\n *\n *  CONTRATO DE SALIDA — siempre devuelve exactamente 1 item con:\n *    { ok, hasSignal, signal, reason, symbol, timestamp, price,\n *      indicators, error, skipReason }\n *  Nunca lanza excepción: si algo falla, devuelve ok:false y el nodo IF\n *  posterior corta antes de Telegram. Un workflow que explota deja de\n *  avisarte, y una alerta falsa es peor que ninguna alerta.\n */\n\n// ---------------------------------------------------------------------------\n// Configuración — EDITAR ACÁ (tiene que coincidir con config.yaml)\n// ---------------------------------------------------------------------------\nconst CONFIG = {\n  symbol: 'QQQ',              // ETF Nasdaq-100. Ver DATA_PROVIDERS.md sobre NQ.\n  interval: '5min',           // formato de Twelve Data\n  intervalMinutes: 5,\n\n  indicators: {\n    emaFast: 9,\n    emaSlow: 21,\n    rsiPeriod: 14,\n    volumeMaPeriod: 20,\n    atrPeriod: 14,\n  },\n\n  // Mismos valores que strategy.params en config.yaml.\n  params: {\n    rsi_long_min: 50.0,\n    rsi_long_max: 70.0,\n    rsi_short_min: 30.0,\n    rsi_short_max: 50.0,\n    allow_long: true,\n    allow_short: true,\n    use_volume_filter: false,\n    volume_factor: 1.0,\n  },\n\n  // Solo alertar en horario regular de mercado (America/New_York).\n  marketHours: {\n    enabled: true,\n    open: '09:30',\n    close: '16:00',\n  },\n\n  // Evitar alertar dos veces por la misma vela. Un cron de 5 min y velas de\n  // 5 min se desalinean seguido, así que sin esto vas a recibir duplicados.\n  deduplicate: true,\n};\n\n// ---------------------------------------------------------------------------\n// Helpers\n// ---------------------------------------------------------------------------\n\n/** Cuántas velas necesitamos para que los indicadores estén \"calientes\".\n *  Espeja src/indicators.py::warmup_bars y le suma margen: pedimos de más\n *  para que la EMA converja, no solo para que deje de ser null. */\nfunction requiredBars(cfg) {\n  const periods = [\n    cfg.indicators.emaFast,\n    cfg.indicators.emaSlow,\n    cfg.indicators.rsiPeriod,\n    cfg.indicators.volumeMaPeriod,\n    cfg.indicators.atrPeriod,\n  ];\n  return Math.max(...periods) + 5 + 80; // warm-up + colchón de convergencia\n}\n\n/** Hora actual en America/New_York como {hhmm, weekday}. */\nfunction nowInMarketTz() {\n  const now = new Date();\n  const parts = new Intl.DateTimeFormat('en-US', {\n    timeZone: 'America/New_York',\n    hour: '2-digit', minute: '2-digit', hour12: false,\n    weekday: 'short',\n  }).formatToParts(now);\n\n  const get = (t) => parts.find((p) => p.type === t)?.value;\n  return {\n    hhmm: `${get('hour')}:${get('minute')}`,\n    weekday: get('weekday'),\n    iso: now.toISOString(),\n  };\n}\n\nfunction isMarketOpen(cfg) {\n  if (!cfg.marketHours.enabled) return true;\n  const { hhmm, weekday } = nowInMarketTz();\n  if (['Sat', 'Sun'].includes(weekday)) return false;\n  return hhmm >= cfg.marketHours.open && hhmm < cfg.marketHours.close;\n}\n\n/**\n * Normaliza la respuesta de Twelve Data a velas ascendentes.\n *\n * Ojo con dos trampas de esta API:\n *   1. Devuelve HTTP 200 con {status:\"error\"} en el body cuando la key es\n *      inválida o se acabó la cuota. Si solo mirás el status code, procesás\n *      basura.\n *   2. `values` viene del más NUEVO al más VIEJO. Hay que invertirlo.\n */\nfunction parseTwelveData(response) {\n  if (!response || typeof response !== 'object') {\n    return { error: 'Respuesta vacía o no-JSON de la API' };\n  }\n  if (response.status === 'error') {\n    return { error: `API: ${response.message || 'error sin mensaje'}` };\n  }\n  if (!Array.isArray(response.values) || response.values.length === 0) {\n    return { error: 'La API no devolvió velas (values vacío)' };\n  }\n\n  const candles = response.values\n    .map((v) => ({\n      timestamp: v.datetime,\n      open: parseFloat(v.open),\n      high: parseFloat(v.high),\n      low: parseFloat(v.low),\n      close: parseFloat(v.close),\n      volume: v.volume !== undefined && v.volume !== null ? parseFloat(v.volume) : 0,\n    }))\n    .filter(\n      (c) =>\n        Number.isFinite(c.open) && Number.isFinite(c.high) &&\n        Number.isFinite(c.low) && Number.isFinite(c.close)\n    )\n    .reverse(); // Twelve Data devuelve desc -> lo pasamos a ascendente\n\n  if (candles.length === 0) return { error: 'Ninguna vela pasó la validación numérica' };\n  return { candles };\n}\n\n/**\n * Descarta la última vela si TODAVÍA SE ESTÁ FORMANDO.\n *\n * Este es el bug clásico del alerting en vivo: la vela en curso cambia de\n * precio hasta que cierra, así que una señal calculada sobre ella \"repinta\"\n * — aparece y desaparece. El backtest solo ve velas cerradas; en vivo hay\n * que forzar lo mismo o los dos dejan de ser comparables.\n */\nfunction dropFormingCandle(candles, intervalMinutes) {\n  if (candles.length < 2) return candles;\n\n  const last = candles[candles.length - 1];\n  // Twelve Data devuelve \"YYYY-MM-DD HH:mm:ss\" en la timezone del exchange.\n  // Comparamos contra el reloj de mercado, no contra UTC.\n  const openMs = Date.parse(last.timestamp.replace(' ', 'T'));\n  if (Number.isNaN(openMs)) return candles; // formato raro: mejor no tocar\n\n  const nowMarket = new Date(\n    new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })\n  ).getTime();\n\n  const closesAt = openMs + intervalMinutes * 60 * 1000;\n  if (nowMarket < closesAt) return candles.slice(0, -1);\n  return candles;\n}\n\n// ---------------------------------------------------------------------------\n// Main\n// ---------------------------------------------------------------------------\n\nfunction buildResult(extra) {\n  return [\n    {\n      json: {\n        ok: false,\n        hasSignal: false,\n        signal: 'NONE',\n        symbol: CONFIG.symbol,\n        interval: CONFIG.interval,\n        checkedAt: new Date().toISOString(),\n        ...extra,\n      },\n    },\n  ];\n}\n\n// n8n static data: persiste entre ejecuciones del MISMO workflow.\n// Lo usamos SOLO para deduplicar, no para acumular historial: el historial\n// lo pedimos entero a la API en cada corrida (ventana rolling real), así el\n// workflow es stateless respecto de los precios y no se corrompe si se\n// pierde una ejecución.\nconst staticData = $getWorkflowStaticData('global');\n\ntry {\n  // --- 1. ¿Estamos en horario de mercado? --------------------------------\n  if (!isMarketOpen(CONFIG)) {\n    return buildResult({\n      ok: true,\n      skipReason: 'Fuera del horario de mercado',\n      marketTime: nowInMarketTz(),\n    });\n  }\n\n  // --- 2. Traer y validar la respuesta de la API -------------------------\n  const items = $input.all();\n  if (!items.length) {\n    return buildResult({ error: 'El nodo HTTP no devolvió ningún item' });\n  }\n\n  const response = items[0].json;\n\n  // Si el HTTP Request falló, n8n (con onError: continueRegularOutput) pasa\n  // un item con la propiedad `error`. No es motivo para romper el workflow.\n  if (response.error) {\n    return buildResult({\n      error: `HTTP Request falló: ${JSON.stringify(response.error).slice(0, 300)}`,\n    });\n  }\n\n  const parsed = parseTwelveData(response);\n  if (parsed.error) return buildResult({ error: parsed.error });\n\n  // --- 3. Ventana rolling ------------------------------------------------\n  // Pedimos a la API exactamente las velas que necesitamos y nos quedamos con\n  // las últimas N. Lo viejo se descarta solo, porque nunca lo guardamos.\n  const needed = requiredBars(CONFIG);\n  let candles = dropFormingCandle(parsed.candles, CONFIG.intervalMinutes);\n  candles = candles.slice(-needed);\n\n  if (candles.length < needed * 0.5) {\n    return buildResult({\n      error:\n        `Velas insuficientes: llegaron ${candles.length}, necesito ~${needed}. ` +\n        `Subí outputsize en el nodo HTTP Request.`,\n      barsReceived: candles.length,\n    });\n  }\n\n  // --- 4. Indicadores + estrategia (código verificado por check_parity) ---\n  const withInd = addIndicators(candles, CONFIG.indicators);\n  const bar = withInd[withInd.length - 1];\n  const prev = withInd[withInd.length - 2] || null;\n\n  const signal = evaluate(bar, prev, CONFIG.params);\n\n  // --- 5. Deduplicación --------------------------------------------------\n  if (CONFIG.deduplicate && signal.type !== 'NONE') {\n    const key = `${CONFIG.symbol}|${bar.timestamp}`;\n    if (staticData.lastAlertKey === key) {\n      return buildResult({\n        ok: true,\n        skipReason: `Ya alerté sobre esta vela (${bar.timestamp})`,\n        signal: signal.type,\n        timestamp: bar.timestamp,\n      });\n    }\n    staticData.lastAlertKey = key;\n  }\n\n  // --- 6. Salida ---------------------------------------------------------\n  const round2 = (x) => (x === null || x === undefined ? null : Math.round(x * 100) / 100);\n\n  return [\n    {\n      json: {\n        ok: true,\n        hasSignal: signal.type === 'LONG' || signal.type === 'SHORT',\n        signal: signal.type,\n        reason: signal.reason,\n        symbol: CONFIG.symbol,\n        interval: CONFIG.interval,\n        timestamp: bar.timestamp,\n        price: round2(bar.close),\n        indicators: {\n          ema_fast: round2(bar.ema_fast),\n          ema_slow: round2(bar.ema_slow),\n          rsi: round2(bar.rsi),\n          atr: round2(bar.atr),\n          volume: bar.volume,\n          volume_ma: round2(bar.volume_ma),\n        },\n        barsUsed: candles.length,\n        checkedAt: new Date().toISOString(),\n      },\n    },\n  ];\n} catch (err) {\n  // Última red de contención: cualquier excepción inesperada sale como\n  // ok:false y el IF corta. El workflow nunca queda en estado \"error\".\n  return buildResult({\n    error: `Excepción inesperada: ${err.message}`,\n    stack: String(err.stack || '').slice(0, 500),\n  });\n}\n"
+      },
+      "id": "code-strategy",
+      "name": "Indicadores + Estrategia",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        300
+      ],
+      "notes": "GENERADO por tools/build_n8n_workflow.py a partir de n8n/strategy.js + n8n/live_wrapper.js. No editar acá."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "cond-signal",
+              "leftValue": "={{ $json.hasSignal }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-signal",
+      "name": "¿Señal válida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        300
+      ],
+      "notes": "Doble compuerta: ok=true (no hubo error de API ni excepción) Y hasSignal=true. Es lo que garantiza que un fallo de la API nunca se convierta en una alerta falsa."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.signal === 'LONG' ? '🟢' : '🔴' }} *SEÑAL {{ $json.signal }}*\n\n*Ticker:* `{{ $json.symbol }}`\n*Timeframe:* {{ $json.interval }}\n*Vela:* {{ $json.timestamp }}\n*Precio:* {{ $json.price }}\n\n*Motivo:* {{ $json.reason }}\n\n*Indicadores*\n• EMA rápida: {{ $json.indicators.ema_fast }}\n• EMA lenta: {{ $json.indicators.ema_slow }}\n• RSI: {{ $json.indicators.rsi }}\n• ATR: {{ $json.indicators.atr }}\n• Volumen: {{ $json.indicators.volume }} (media {{ $json.indicators.volume_ma }})\n\n_Alerta de análisis. No es una orden ni ejecuta operaciones._",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram-alert",
+      "name": "Telegram · Enviar alerta",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        780,
+        200
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REEMPLAZAR",
+          "name": "PLACEHOLDER · Telegram Bot"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "chatId sale de la variable de entorno TELEGRAM_CHAT_ID. El token del bot va en la credencial 'Telegram API'. Ninguno de los dos se guarda en este JSON."
+    },
+    {
+      "parameters": {},
+      "id": "noop-nosignal",
+      "name": "Sin señal / error registrado",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        780,
+        400
+      ],
+      "notes": "Rama silenciosa. El motivo queda en el output del Code node (campos error / skipReason), visible en Executions. Si querés que los errores te avisen, colgá acá un segundo nodo de Telegram filtrando por $json.error."
+    }
+  ],
+  "connections": {
+    "Cron 5 min (horario mercado)": {
+      "main": [
+        [
+          {
+            "node": "Twelve Data · time_series",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Twelve Data · time_series": {
+      "main": [
+        [
+          {
+            "node": "Indicadores + Estrategia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Indicadores + Estrategia": {
+      "main": [
+        [
+          {
+            "node": "¿Señal válida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Señal válida?": {
+      "main": [
+        [
+          {
+            "node": "Telegram · Enviar alerta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sin señal / error registrado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  },
+  "pinData": {},
+  "tags": [],
+  "meta": {
+    "instanceId": "PLACEHOLDER",
+    "generatedBy": "tools/build_n8n_workflow.py",
+    "strategySource": "n8n/strategy.js (verificado con tools/check_parity.py)"
+  }
+}

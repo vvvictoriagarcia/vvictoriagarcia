@@ -1,0 +1,132 @@
+# ============================================================================
+# NQ Trading System — configuración central
+# ============================================================================
+# Todo lo parametrizable vive acá. Ni data_fetcher, ni indicators, ni
+# backtester tienen constantes hardcodeadas: todos leen de este archivo.
+#
+# Las claves de API (Telegram, Twelve Data, etc.) NO van acá — van en .env.
+# ============================================================================
+
+data:
+  # Ticker de yfinance. Ejemplos:
+  #   NQ=F   -> futuro continuo Nasdaq-100 E-mini (front month)
+  #   ES=F   -> futuro continuo S&P 500 E-mini
+  #   ^NDX   -> índice Nasdaq-100 (spot, sin volumen real)
+  #   QQQ    -> ETF Nasdaq-100 (volumen real, horario RTH)
+  ticker: "NQ=F"
+
+  # Timeframe. Válidos en yfinance: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, ...
+  # OJO con los límites de yfinance (ver docs/LIMITES.md):
+  #   1m           -> solo últimos ~7 días
+  #   2m/5m/.../90m-> solo últimos ~60 días
+  #   1h           -> solo últimos ~730 días
+  interval: "5m"
+
+  # Rango de fechas. Dos modos, mutuamente excluyentes:
+  #   (a) lookback_days: N   -> últimos N días desde hoy  (RECOMENDADO)
+  #   (b) start / end        -> fechas fijas "YYYY-MM-DD"
+  # Si definís start/end, lookback_days se ignora.
+  lookback_days: 55
+  start: null
+  end: null
+
+  # Filtrar a horario de mercado regular (RTH). Para futuros esto recorta
+  # la sesión overnight, que suele tener spreads y volumen muy distintos.
+  # Zona horaria de referencia: America/New_York.
+  regular_hours_only: true
+  session_start: "09:30"   # hora NY
+  session_end: "16:00"     # hora NY
+
+  # Cerrar cualquier posición abierta al final de cada día (no dejar overnight).
+  # Es una estrategia intradiaria, así que por defecto: true.
+  close_at_session_end: true
+
+  # Cachear las descargas en outputs/cache/ para no re-pegarle a Yahoo en
+  # cada corrida mientras iterás sobre la estrategia.
+  use_cache: true
+  cache_ttl_minutes: 30
+
+indicators:
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 14
+  # Media de volumen, usada como filtro opcional de liquidez.
+  volume_ma_period: 20
+  # Ventana (en velas a cada lado) para detectar pivots de soporte/resistencia.
+  # Un pivot alto es una vela cuyo High es el máximo de las `sr_lookback` velas
+  # anteriores y las `sr_lookback` posteriores.
+  sr_lookback: 10
+
+strategy:
+  # Nombre de la estrategia registrada en src/strategy.py (STRATEGY_REGISTRY).
+  # Cambiando esta línea cambiás toda la lógica de señales, sin tocar nada más.
+  name: "ema_cross_rsi"
+
+  # Parámetros que recibe la estrategia. Cada estrategia define los suyos.
+  params:
+    # --- Filtro RSI ---
+    # Long solo si RSI está en (rsi_long_min, rsi_long_max).
+    # El techo evita comprar en sobrecompra ya extendida.
+    rsi_long_min: 50.0
+    rsi_long_max: 70.0
+    # Short solo si RSI está en (rsi_short_min, rsi_short_max).
+    rsi_short_min: 30.0
+    rsi_short_max: 50.0
+
+    # --- Dirección permitida ---
+    allow_long: true
+    allow_short: true
+
+    # --- Filtro de volumen (opcional) ---
+    # Si es true, solo entra si volume > volume_ma * volume_factor.
+    use_volume_filter: false
+    volume_factor: 1.0
+
+risk:
+  # Take profit / stop loss.
+  # mode: "points" -> valores absolutos en puntos del índice
+  #       "percent" -> % sobre el precio de entrada
+  #       "atr"     -> múltiplos de ATR (atr_period configurable)
+  mode: "points"
+  take_profit: 40.0      # 40 puntos NQ
+  stop_loss: 20.0        # 20 puntos NQ  -> R:R = 2:1
+  atr_period: 14
+
+  # Salir también si la estrategia emite señal contraria (motivo: "SIGNAL").
+  exit_on_opposite_signal: true
+
+execution:
+  # Cómo se rellena la orden una vez disparada la señal.
+  #   "next_open"    -> entra en la apertura de la vela SIGUIENTE (realista, sin lookahead)
+  #   "signal_close" -> entra en el cierre de la vela de la señal (optimista)
+  # Por defecto next_open: es la única honesta para un backtest intradiario.
+  fill: "next_open"
+
+  # Costos por trade (ida y vuelta), en puntos del índice.
+  # NQ: comisión ~$2.50 por lado por contrato ($5 round-trip) y el tick es
+  # 0.25 pts = $5, así que $5 ≈ 0.25 pts. Slippage: 1 tick por lado es
+  # conservador para NQ en horario líquido.
+  commission_points: 0.25
+  slippage_points: 0.50
+
+  # Valor en USD de 1 punto del índice. NQ (E-mini) = $20/punto.
+  # MNQ (Micro) = $2/punto. Se usa solo para reportar P&L en dólares.
+  point_value_usd: 20.0
+
+  # Capital inicial nominal, solo para dibujar la curva de equity en %.
+  initial_capital_usd: 25000.0
+
+  # Cantidad de contratos por trade (posición fija, sin sizing dinámico).
+  contracts: 1
+
+output:
+  dir: "outputs"
+  trades_csv: "trades.csv"
+  equity_csv: "equity.csv"
+  metrics_json: "metrics.json"
+  chart_file: "chart.png"
+  # "matplotlib" (PNG estático) o "plotly" (HTML interactivo)
+  chart_engine: "matplotlib"
+  # Máximo de velas a dibujar en el gráfico. Con 55 días de 5m son ~4000
+  # velas y el PNG se vuelve ilegible; esto recorta a las últimas N.
+  chart_max_bars: 800
