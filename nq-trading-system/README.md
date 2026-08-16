@@ -18,16 +18,53 @@ Dos partes que comparten la misma lógica de estrategia:
 
 ## Empezar
 
+Necesitás **Python 3.10+**. Para el backtester no hace falta ninguna API key.
+
 ```bash
-cd nq-trading-system
+git clone -b claude/nasdaq-trading-backtest-alerts-rxyohg \
+  https://github.com/vvvictoriagarcia/vvictoriagarcia.git
+cd vvictoriagarcia/nq-trading-system
+
+python3 -m venv .venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env      # solo hace falta para las alertas (Parte 2)
 
 python -m src.main
 ```
 
 Sin configurar nada corre NQ=F en 5 minutos, últimos 55 días, con la
-estrategia placeholder.
+estrategia placeholder, y escribe todo en `outputs/`.
+
+**¿Dónde corre cada parte?**
+
+| | Dónde corre | Costo |
+|---|---|---|
+| **Backtester** | Tu máquina, cuando lo ejecutás | USD 0 |
+| **Dashboard HTML** | GitHub Actions + Pages, se regenera solo | USD 0 |
+| **Bot de alertas** | Algo prendido 24/7 (VPS, n8n Cloud) | USD 0–24/mes |
+
+El bot de alertas es el único que necesita infraestructura: si n8n corre en tu
+notebook y la cerrás, dejás de recibir alertas sin ningún aviso. Guía completa
+de instalación y hosting en [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+### Dashboard
+
+```bash
+python tools/build_dashboard.py --out site   # abrí site/index.html
+```
+
+Página autocontenida (SVG generado, sin librerías ni CDN) con el estado actual,
+la señal vigente, la curva de equity y los últimos trades. Tema claro/oscuro y
+un indicador de "actualizado hace X" que se pone en rojo si el pipeline se
+cortó.
+
+Se publica sola con `.github/workflows/dashboard.yml`: GitHub Actions la
+regenera cada 15 minutos en horario de mercado y Pages la sirve. Activás con
+**Settings → Pages → Source: GitHub Actions**.
+
+> El cron de Actions se retrasa entre 5 y 20 minutos, así que el panel es para
+> **mirar**, no para reaccionar. Las alertas puntuales van por Telegram desde
+> n8n. n8n te avisa, la página te muestra.
 
 ### Salida de una corrida real
 

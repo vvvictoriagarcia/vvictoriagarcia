@@ -1,0 +1,100 @@
+# ============================================================================
+#  Regenera el dashboard y lo publica en GitHub Pages
+# ============================================================================
+#
+#  Esto es lo que hace que el panel esté "siempre corriendo" sin que tengas
+#  ningún servidor propio: GitHub ejecuta el Python en su infraestructura y
+#  Pages sirve el HTML resultante.
+#
+#  ┌─ cron ─┐   ┌─ runner de GitHub ─────────┐   ┌─ Pages ──────┐
+#  │ cada   │──▶│ instala deps               │──▶│ sirve el     │
+#  │ 15 min │   │ corre build_dashboard.py   │   │ index.html   │
+#  └────────┘   │ (yfinance → backtest → svg)│   └──────────────┘
+#               └────────────────────────────┘
+#
+#  ACTIVACIÓN (una sola vez):
+#    Settings → Pages → Source: "GitHub Actions"
+#
+#  LÍMITES QUE CONVIENE SABER
+#   - El cron de Actions NO es puntual: se retrasa entre 5 y 20 minutos, y más
+#     en horas pico. Para un panel está bien; para ALERTAS no sirve — por eso
+#     las alertas van por Telegram desde n8n, que sí corre a horario.
+#   - En repos públicos los minutos son gratis e ilimitados. En privados hay
+#     2.000 min/mes en el plan free.
+#   - GitHub DESACTIVA los workflows programados si el repo pasa 60 días sin
+#     actividad. Te avisa por mail; se reactivan con un click.
+# ============================================================================
+
+name: Dashboard
+
+on:
+  schedule:
+    # Cada 15 min, lun-vie, 13-20h UTC = sesión regular de Nueva York
+    # (cubre EDT y EST). El cron de GitHub siempre se interpreta en UTC.
+    - cron: "*/15 13-20 * * 1-5"
+  workflow_dispatch:        # botón para correrlo a mano desde la pestaña Actions
+  push:
+    branches: [claude/nasdaq-trading-backtest-alerts-rxyohg]
+    paths:
+      - "nq-trading-system/**"
+      - ".github/workflows/dashboard.yml"
+
+# Permisos mínimos necesarios para publicar en Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Si se solapan dos corridas, que gane la última en vez de encolarse.
+concurrency:
+  group: dashboard
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nq-trading-system
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: nq-trading-system/requirements.txt
+
+      - name: Instalar dependencias
+        # Solo lo que el dashboard necesita. Ni matplotlib ni fastapi hacen
+        # falta acá (los gráficos del panel son SVG generados a mano), y
+        # sacarlos baja el tiempo de instalación a la mitad.
+        run: pip install yfinance pandas numpy PyYAML python-dotenv
+
+      - name: Generar el dashboard
+        # --no-cache porque el runner es efímero: cachear no sirve de nada y
+        # además evita tener que instalar pyarrow solo para eso.
+        run: python tools/build_dashboard.py --out site --no-cache
+
+      - name: Verificar que se generó algo usable
+        # Sin esto, un fallo silencioso publicaría una página vacía y el panel
+        # quedaría mostrando datos viejos sin que nadie se entere.
+        run: |
+          test -s site/index.html || { echo "index.html vacío o ausente"; exit 1; }
+          grep -q "Curva de equity" site/index.html || { echo "HTML incompleto"; exit 1; }
+          echo "OK: $(du -h site/index.html | cut -f1)"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: nq-trading-system/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
