@@ -1,0 +1,29 @@
+# Núcleo — necesario para el backtester
+yfinance>=0.2.55
+pandas>=2.0
+numpy>=1.24
+matplotlib>=3.7
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# Gráfico interactivo (config: output.chart_engine = "plotly")
+plotly>=5.18
+
+# Signal service opcional (n8n -> estrategia Python literal, ver n8n/README.md)
+fastapi>=0.110
+uvicorn>=0.27
+
+# NOTA sobre librerías de indicadores
+# ----------------------------------
+# Este proyecto NO depende de pandas-ta ni de ta. Los indicadores están
+# implementados en pandas puro en src/indicators.py, a propósito:
+#
+#   1. Paridad Python <-> JavaScript. El workflow de n8n tiene que calcular
+#      exactamente los mismos indicadores en un Code node de JS. Con una
+#      implementación propia podemos portarla 1:1 y verificar la paridad
+#      numéricamente (tools/check_parity.py). Con pandas-ta no se puede.
+#   2. pandas-ta 0.3.x rompe con numpy>=2 (`from numpy import NaN`) y las
+#      builds nuevas exigen Python>=3.12.
+#
+# Las fórmulas siguen la convención de la librería `ta` (RSI de Wilder con
+# suavizado RMA, EMA con adjust=False). Ver tests/test_indicators.py.

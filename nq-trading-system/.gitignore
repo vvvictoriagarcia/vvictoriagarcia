@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Dashboard generado (lo publica GitHub Actions, no se commitea)
+site/
+
+# Resultados de corridas y caché de descargas
+outputs/*
+!outputs/.gitkeep
+!outputs/example_run/
+
+.DS_Store
